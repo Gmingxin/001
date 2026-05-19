@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高斯泼溅粒子渲染 - Gaussian Splatting Particle Renderer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background: transparent;
+            overflow: hidden;
+            min-height: 100vh;
+            position: relative;
+        }
+
+        #app-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            background: linear-gradient(135deg, 
+                rgba(10, 25, 47, 0.9) 0%, 
+                rgba(18, 38, 64, 0.85) 50%, 
+                rgba(27, 51, 82, 0.8) 100%);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* UI Overlay */
+        .ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            color: rgba(255, 255, 255, 0.95);
+            pointer-events: auto;
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 300;
+            letter-spacing: 8px;
+            text-transform: uppercase;
+            background: linear-gradient(135deg, 
+                #667eea 0%, 
+                #764ba2 50%, 
+                #f093fb 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+            text-shadow: 0 0 30px rgba(102, 126, 234, 0.5);
+        }
+
+        .header p {
+            font-size: 0.9rem;
+            letter-spacing: 3px;
+            opacity: 0.7;
+            font-weight: 300;
+        }
+
+        .controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            pointer-events: auto;
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .upload-area {
+            border: 2px dashed rgba(255, 255, 255, 0.3);
+            border-radius: 20px;
+            padding: 40px 60px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            cursor: pointer;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .upload-area::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, 
+                transparent 30%, 
+                rgba(102, 126, 234, 0.1) 50%, 
+                transparent 70%);
+            transform: rotate(45deg);
+            animation: shimmer 3s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%) rotate(45deg); }
+            100% { transform: translateX(100%) rotate(45deg); }
+        }
+
+        .upload-area:hover {
+            border-color: rgba(102, 126, 234, 0.8);
+            background: rgba(255, 255, 255, 0.08);
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(102, 126, 234, 0.3);
+        }
+
+        .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 15px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .upload-text {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 1.1rem;
+            letter-spacing: 2px;
+        }
+
+        .upload-hint {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.8rem;
+            margin-top: 10px;
+            letter-spacing: 1px;
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            pointer-events: none;
+        }
+
+        .btn-group.active {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+        }
+
+        .btn {
+            padding: 15px 40px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1rem;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+            font-weight: 500;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(102, 126, 234, 0.6);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            backdrop-filter: blur(10px);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.5);
+            transform: translateY(-3px);
+        }
+
+        .effect-selector {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-top: 20px;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            pointer-events: none;
+        }
+
+        .effect-selector.active {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+        }
+
+        .effect-btn {
+            padding: 10px 25px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 30px;
+            background: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.8);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.85rem;
+            letter-spacing: 2px;
+            backdrop-filter: blur(5px);
+        }
+
+        .effect-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(255, 255, 255, 0.6);
+        }
+
+        .effect-btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: transparent;
+            color: white;
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        /* Progress Indicator */
+        .progress-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: white;
+            z-index: 20;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+            pointer-events: none;
+        }
+
+        .progress-container.visible {
+            opacity: 1;
+        }
+
+        .progress-ring {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 20px;
+        }
+
+        .progress-ring circle {
+            fill: none;
+            stroke-width: 4;
+        }
+
+        .progress-ring .bg {
+            stroke: rgba(255, 255, 255, 0.1);
+        }
+
+        .progress-ring .progress {
+            stroke: url(#gradient);
+            stroke-linecap: round;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+            transition: stroke-dashoffset 0.3s ease;
+        }
+
+        .progress-text {
+            font-size: 1.5rem;
+            font-weight: 300;
+            letter-spacing: 3px;
+            margin-bottom: 10px;
+        }
+
+        .progress-status {
+            font-size: 0.9rem;
+            opacity: 0.7;
+            letter-spacing: 2px;
+        }
+
+        /* Stats Panel */
+        .stats-panel {
+            position: absolute;
+            bottom: 40px;
+            right: 40px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 20px;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            pointer-events: none;
+        }
+
+        .stats-panel.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            gap: 30px;
+            margin-bottom: 8px;
+        }
+
+        .stat-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .stat-label {
+            opacity: 0.6;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        /* Hidden state for upload area after rendering starts */
+        .upload-area.hidden {
+            opacity: 0;
+            transform: scale(0.9);
+            pointer-events: none;
+        }
+
+        .header.hidden {
+            opacity: 0;
+            transform: translateY(-20px);
+        }
+
+        /* Particle info tooltip */
+        .particle-info {
+            position: absolute;
+            top: 40px;
+            left: 40px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px 20px;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.75rem;
+            letter-spacing: 1px;
+            opacity: 0;
+            transition: opacity 0.6s ease;
+        }
+
+        .particle-info.visible {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <div id="canvas-container">
+            <canvas id="main-canvas"></canvas>
+        </div>
+
+        <div class="ui-overlay">
+            <div class="header" id="header">
+                <h1>Gaussian Splatting</h1>
+                <p>高斯泼溅粒子渲染引擎</p>
+            </div>
+
+            <div class="controls">
+                <div class="upload-area" id="upload-area">
+                    <div class="upload-icon">📷</div>
+                    <div class="upload-text">点击上传照片</div>
+                    <div class="upload-hint">支持 JPG, PNG, WEBP 格式</div>
+                    <input type="file" id="file-input" accept="image/*">
+                </div>
+
+                <div class="btn-group" id="btn-group">
+                    <button class="btn btn-primary" id="render-btn">开始渲染</button>
+                    <button class="btn btn-secondary" id="reset-btn">重新选择</button>
+                </div>
+
+                <div class="effect-selector" id="effect-selector">
+                    <button class="effect-btn active" data-effect="standard">标准粒子</button>
+                    <button class="effect-btn" data-effect="glow">发光粒子</button>
+                    <button class="effect-btn" data-effect="flow">流动粒子</button>
+                    <button class="effect-btn" data-effect="sparkle">闪烁粒子</button>
+                    <button class="effect-btn" data-effect="wave">波动粒子</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="progress-container" id="progress-container">
+            <svg class="progress-ring" viewBox="0 0 120 120">
+                <defs>
+                    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" style="stop-color:#667eea"/>
+                        <stop offset="50%" style="stop-color:#764ba2"/>
+                        <stop offset="100%" style="stop-color:#f093fb"/>
+                    </linearGradient>
+                </defs>
+                <circle class="bg" cx="60" cy="60" r="52"/>
+                <circle class="progress" cx="60" cy="60" r="52" 
+                    stroke-dasharray="326.725" stroke-dashoffset="326.725" id="progress-circle"/>
+            </svg>
+            <div class="progress-text" id="progress-text">0%</div>
+            <div class="progress-status" id="progress-status">初始化粒子系统...</div>
+        </div>
+
+        <div class="stats-panel" id="stats-panel">
+            <div class="stat-item">
+                <span class="stat-label">粒子数量</span>
+                <span class="stat-value" id="particle-count">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">渲染帧率</span>
+                <span class="stat-value" id="fps">0 FPS</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">渲染模式</span>
+                <span class="stat-value" id="render-mode">标准</span>
+            </div>
+        </div>
+
+        <div class="particle-info" id="particle-info">
+            拖动鼠标旋转视角 | 滚轮缩放
+        </div>
+    </div>
+
+    <script>
+        // ==================== 高斯泼溅粒子渲染引擎 ====================
+        
+        class GaussianSplattingRenderer {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.width = canvas.width = window.innerWidth;
+                this.height = canvas.height = window.innerHeight;
+                
+                this.particles = [];
+                this.imageData = null;
+                this.isRendering = false;
+                this.renderProgress = 0;
+                this.currentEffect = 'standard';
+                this.animationId = null;
+                this.lastFrameTime = 0;
+                this.frameCount = 0;
+                this.fps = 0;
+                
+                // 相机控制
+                this.camera = {
+                    x: 0,
+                    y: 0,
+                    zoom: 1,
+                    rotation: 0
+                };
+                
+                this.mouse = {
+                    x: 0,
+                    y: 0,
+                    isDown: false,
+                    lastX: 0,
+                    lastY: 0
+                };
+                
+                this.setupEventListeners();
+                this.resize();
+            }
+            
+            setupEventListeners() {
+                window.addEventListener('resize', () => this.resize());
+                
+                this.canvas.addEventListener('mousedown', (e) => {
+                    this.mouse.isDown = true;
+                    this.mouse.lastX = e.clientX;
+                    this.mouse.lastY = e.clientY;
+                });
+                
+                this.canvas.addEventListener('mousemove', (e) => {
+                    if (this.mouse.isDown) {
+                        const deltaX = e.clientX - this.mouse.lastX;
+                        const deltaY = e.clientY - this.mouse.lastY;
+                        this.camera.rotation += deltaX * 0.005;
+                        this.camera.x += deltaX;
+                        this.camera.y += deltaY;
+                        this.mouse.lastX = e.clientX;
+                        this.mouse.lastY = e.clientY;
+                    }
+                });
+                
+                this.canvas.addEventListener('mouseup', () => {
+                    this.mouse.isDown = false;
+                });
+                
+                this.canvas.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    this.camera.zoom *= e.deltaY > 0 ? 0.95 : 1.05;
+                    this.camera.zoom = Math.max(0.5, Math.min(3, this.camera.zoom));
+                });
+            }
+            
+            resize() {
+                this.width = this.canvas.width = window.innerWidth;
+                this.height = this.canvas.height = window.innerHeight;
+            }
+            
+            async loadImage(file) {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = reject;
+                    img.src = URL.createObjectURL(file);
+                });
+            }
+            
+            async processImage(img) {
+                // 创建临时 canvas 读取图像数据
+                const tempCanvas = document.createElement('canvas');
+                const maxSize = 800;
+                let width = img.width;
+                let height = img.height;
+                
+                if (width > maxSize || height > maxSize) {
+                    const ratio = Math.min(maxSize / width, maxSize / height);
+                    width *= ratio;
+                    height *= ratio;
+                }
+                
+                tempCanvas.width = width;
+                tempCanvas.height = height;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.drawImage(img, 0, 0, width, height);
+                
+                this.imageData = tempCtx.getImageData(0, 0, width, height);
+                
+                // 生成粒子
+                await this.generateParticles(width, height);
+            }
+            
+            async generateParticles(width, height) {
+                this.particles = [];
+                const data = this.imageData.data;
+                const sampleRate = 4; // 采样率，值越大粒子越少
+                
+                const totalPixels = (width * height) / (sampleRate * sampleRate);
+                let processed = 0;
+                
+                for (let y = 0; y < height; y += sampleRate) {
+                    for (let x = 0; x < width; x += sampleRate) {
+                        const idx = (y * width + x) * 4;
+                        const r = data[idx];
+                        const g = data[idx + 1];
+                        const b = data[idx + 2];
+                        const a = data[idx + 3];
+                        
+                        if (a > 128) { // 只处理不透明的像素
+                            const brightness = (r + g + b) / 3;
+                            
+                            this.particles.push({
+                                x: x - width / 2,
+                                y: y - height / 2,
+                                z: Math.random() * 100,
+                                vx: (Math.random() - 0.5) * 2,
+                                vy: (Math.random() - 0.5) * 2,
+                                vz: (Math.random() - 0.5) * 2,
+                                r, g, b,
+                                alpha: a / 255,
+                                size: Math.random() * 3 + 2,
+                                baseSize: Math.random() * 3 + 2,
+                                brightness,
+                                phase: Math.random() * Math.PI * 2,
+                                speed: Math.random() * 0.5 + 0.5,
+                                originalX: x - width / 2,
+                                originalY: y - height / 2,
+                                originalZ: Math.random() * 100
+                            });
+                        }
+                        
+                        processed++;
+                    }
+                    
+                    // 异步更新，避免阻塞
+                    if (processed % 1000 === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+                }
+                
+                console.log(`生成了 ${this.particles.length} 个粒子`);
+            }
+            
+            setEffect(effect) {
+                this.currentEffect = effect;
+            }
+            
+            startRender(onProgress) {
+                this.isRendering = true;
+                this.renderProgress = 0;
+                this.lastFrameTime = performance.now();
+                
+                const animate = (currentTime) => {
+                    if (!this.isRendering) return;
+                    
+                    // 计算 FPS
+                    this.frameCount++;
+                    if (currentTime - this.lastFrameTime >= 1000) {
+                        this.fps = this.frameCount;
+                        this.frameCount = 0;
+                        this.lastFrameTime = currentTime;
+                    }
+                    
+                    // 更新渲染进度
+                    if (this.renderProgress < 100) {
+                        this.renderProgress += 0.5;
+                        onProgress(this.renderProgress);
+                    }
+                    
+                    this.update();
+                    this.render();
+                    
+                    this.animationId = requestAnimationFrame(animate);
+                };
+                
+                this.animationId = requestAnimationFrame(animate);
+            }
+            
+            stopRender() {
+                this.isRendering = false;
+                if (this.animationId) {
+                    cancelAnimationFrame(this.animationId);
+                    this.animationId = null;
+                }
+            }
+            
+            update() {
+                const time = Date.now() * 0.001;
+                
+                this.particles.forEach((particle, index) => {
+                    // 根据效果类型应用不同的动画
+                    switch (this.currentEffect) {
+                        case 'glow':
+                            this.updateGlowEffect(particle, time);
+                            break;
+                        case 'flow':
+                            this.updateFlowEffect(particle, time);
+                            break;
+                        case 'sparkle':
+                            this.updateSparkleEffect(particle, time);
+                            break;
+                        case 'wave':
+                            this.updateWaveEffect(particle, time);
+                            break;
+                        default:
+                            this.updateStandardEffect(particle, time);
+                    }
+                });
+            }
+            
+            updateStandardEffect(particle, time) {
+                // 标准效果：轻微浮动
+                particle.phase += 0.02 * particle.speed;
+                particle.y += Math.sin(particle.phase) * 0.3;
+                particle.x += Math.cos(particle.phase) * 0.2;
+            }
+            
+            updateGlowEffect(particle, time) {
+                // 发光效果：脉冲式大小变化
+                particle.phase += 0.05 * particle.speed;
+                particle.size = particle.baseSize * (1 + Math.sin(particle.phase) * 0.5);
+                particle.y += Math.sin(particle.phase) * 0.2;
+            }
+            
+            updateFlowEffect(particle, time) {
+                // 流动效果：波浪式运动
+                particle.phase += 0.03 * particle.speed;
+                particle.x += Math.sin(particle.phase) * 0.5;
+                particle.y += Math.cos(particle.phase * 0.5) * 0.3;
+            }
+            
+            updateSparkleEffect(particle, time) {
+                // 闪烁效果：随机透明度变化
+                particle.phase += 0.1 * particle.speed;
+                particle.alpha = 0.5 + Math.sin(particle.phase) * 0.5;
+                particle.size = particle.baseSize * (0.8 + Math.random() * 0.4);
+            }
+            
+            updateWaveEffect(particle, time) {
+                // 波动效果：正弦波运动
+                particle.phase += 0.04 * particle.speed;
+                const wave = Math.sin(particle.phase + particle.originalX * 0.01);
+                particle.z = particle.originalZ + wave * 50;
+                particle.y += Math.sin(particle.phase) * 0.4;
+            }
+            
+            render() {
+                this.ctx.clearRect(0, 0, this.width, this.height);
+                
+                // 应用相机变换
+                this.ctx.save();
+                this.ctx.translate(this.width / 2 + this.camera.x, this.height / 2 + this.camera.y);
+                this.ctx.scale(this.camera.zoom, this.camera.zoom);
+                this.ctx.rotate(this.camera.rotation);
+                
+                // 排序粒子（根据 Z 轴深度）
+                const sortedParticles = [...this.particles].sort((a, b) => b.z - a.z);
+                
+                // 渲染粒子
+                sortedParticles.forEach(particle => {
+                    this.renderParticle(particle);
+                });
+                
+                this.ctx.restore();
+            }
+            
+            renderParticle(particle) {
+                const { x, y, z, r, g, b, alpha, size } = particle;
+                
+                // 根据深度调整大小和透明度
+                const depthScale = 1 + z / 500;
+                const scaledSize = size * depthScale;
+                const scaledAlpha = alpha * (1 - z / 500);
+                
+                // 创建高斯渐变
+                const gradient = this.ctx.createRadialGradient(x, y, 0, x, y, scaledSize);
+                
+                switch (this.currentEffect) {
+                    case 'glow':
+                        gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${scaledAlpha})`);
+                        gradient.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, ${scaledAlpha * 0.5})`);
+                        gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+                        break;
+                    case 'sparkle':
+                        gradient.addColorStop(0, `rgba(${Math.min(255, r + 50)}, ${Math.min(255, g + 50)}, ${Math.min(255, b + 50)}, ${scaledAlpha})`);
+                        gradient.addColorStop(0.3, `rgba(${r}, ${g}, ${b}, ${scaledAlpha * 0.8})`);
+                        gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+                        break;
+                    default:
+                        gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${scaledAlpha})`);
+                        gradient.addColorStop(0.7, `rgba(${r}, ${g}, ${b}, ${scaledAlpha * 0.6})`);
+                        gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+                }
+                
+                this.ctx.fillStyle = gradient;
+                this.ctx.beginPath();
+                this.ctx.arc(x, y, scaledSize, 0, Math.PI * 2);
+                this.ctx.fill();
+                
+                // 添加发光效果
+                if (this.currentEffect === 'glow' || this.currentEffect === 'sparkle') {
+                    this.ctx.shadowBlur = 20;
+                    this.ctx.shadowColor = `rgba(${r}, ${g}, ${b}, ${scaledAlpha})`;
+                    this.ctx.fill();
+                    this.ctx.shadowBlur = 0;
+                }
+            }
+            
+            reset() {
+                this.stopRender();
+                this.particles = [];
+                this.imageData = null;
+                this.renderProgress = 0;
+                this.camera = { x: 0, y: 0, zoom: 1, rotation: 0 };
+                this.ctx.clearRect(0, 0, this.width, this.height);
+            }
+            
+            getStats() {
+                return {
+                    particleCount: this.particles.length,
+                    fps: this.fps,
+                    effect: this.currentEffect
+                };
+            }
+        }
+        
+        // ==================== 应用逻辑 ====================
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('main-canvas');
+            const renderer = new GaussianSplattingRenderer(canvas);
+            
+            // UI 元素
+            const uploadArea = document.getElementById('upload-area');
+            const fileInput = document.getElementById('file-input');
+            const btnGroup = document.getElementById('btn-group');
+            const renderBtn = document.getElementById('render-btn');
+            const resetBtn = document.getElementById('reset-btn');
+            const effectSelector = document.getElementById('effect-selector');
+            const progressContainer = document.getElementById('progress-container');
+            const progressCircle = document.getElementById('progress-circle');
+            const progressText = document.getElementById('progress-text');
+            const progressStatus = document.getElementById('progress-status');
+            const statsPanel = document.getElementById('stats-panel');
+            const particleInfo = document.getElementById('particle-info');
+            const header = document.getElementById('header');
+            
+            // 状态变量
+            let imageLoaded = false;
+            let isRendering = false;
+            
+            // 更新进度环
+            function updateProgress(progress) {
+                const circumference = 2 * Math.PI * 52;
+                const offset = circumference - (progress / 100) * circumference;
+                progressCircle.style.strokeDashoffset = offset;
+                progressText.textContent = `${Math.round(progress)}%`;
+            }
+            
+            // 更新状态文本
+            function updateStatus(status) {
+                progressStatus.textContent = status;
+            }
+            
+            // 更新统计面板
+            function updateStats() {
+                const stats = renderer.getStats();
+                document.getElementById('particle-count').textContent = stats.particleCount.toLocaleString();
+                document.getElementById('fps').textContent = `${stats.fps} FPS`;
+                
+                const effectNames = {
+                    'standard': '标准粒子',
+                    'glow': '发光粒子',
+                    'flow': '流动粒子',
+                    'sparkle': '闪烁粒子',
+                    'wave': '波动粒子'
+                };
+                document.getElementById('render-mode').textContent = effectNames[stats.effect] || stats.effect;
+            }
+            
+            // 文件上传处理
+            uploadArea.addEventListener('click', () => {
+                fileInput.click();
+            });
+            
+            fileInput.addEventListener('change', async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                try {
+                    uploadArea.classList.add('hidden');
+                    updateStatus('加载图像...');
+                    
+                    const img = await renderer.loadImage(file);
+                    updateStatus('处理图像...');
+                    
+                    await renderer.processImage(img);
+                    
+                    imageLoaded = true;
+                    btnGroup.classList.add('active');
+                    effectSelector.classList.add('active');
+                    statsPanel.classList.add('visible');
+                    particleInfo.classList.add('visible');
+                    
+                    updateStats();
+                    updateStatus('准备就绪');
+                    
+                } catch (error) {
+                    console.error('加载图像失败:', error);
+                    alert('图像加载失败，请重试');
+                    uploadArea.classList.remove('hidden');
+                }
+            });
+            
+            // 开始渲染按钮
+            renderBtn.addEventListener('click', () => {
+                if (!imageLoaded || isRendering) return;
+                
+                isRendering = true;
+                renderBtn.disabled = true;
+                progressContainer.classList.add('visible');
+                btnGroup.classList.remove('active');
+                effectSelector.classList.remove('active');
+                header.classList.add('hidden');
+                
+                updateStatus('初始化粒子系统...');
+                
+                // 延迟启动渲染，让 UI 先更新
+                setTimeout(() => {
+                    renderer.startRender((progress) => {
+                        updateProgress(progress);
+                        
+                        if (progress < 30) {
+                            updateStatus('初始化粒子系统...');
+                        } else if (progress < 60) {
+                            updateStatus('构建高斯分布...');
+                        } else if (progress < 85) {
+                            updateStatus('渲染粒子云...');
+                        } else {
+                            updateStatus('优化显示效果...');
+                        }
+                        
+                        if (progress >= 100) {
+                            setTimeout(() => {
+                                progressContainer.classList.remove('visible');
+                                statsPanel.classList.add('visible');
+                                particleInfo.classList.add('visible');
+                                updateStats();
+                            }, 500);
+                        }
+                    });
+                }, 100);
+            });
+            
+            // 重置按钮
+            resetBtn.addEventListener('click', () => {
+                renderer.reset();
+                imageLoaded = false;
+                isRendering = false;
+                renderBtn.disabled = false;
+                progressContainer.classList.remove('visible');
+                btnGroup.classList.remove('active');
+                effectSelector.classList.remove('active');
+                statsPanel.classList.remove('visible');
+                particleInfo.classList.remove('visible');
+                header.classList.remove('hidden');
+                uploadArea.classList.remove('hidden');
+                fileInput.value = '';
+                updateProgress(0);
+            });
+            
+            // 效果选择器
+            document.querySelectorAll('.effect-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.effect-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    const effect = btn.dataset.effect;
+                    renderer.setEffect(effect);
+                    updateStats();
+                });
+            });
+            
+            // 定期更新统计信息
+            setInterval(() => {
+                if (renderer.isRendering) {
+                    updateStats();
+                }
+            }, 1000);
+            
+            // 初始渲染一帧（空场景）
+            renderer.render();
+        });
+    </script>
+</body>
+</html>
